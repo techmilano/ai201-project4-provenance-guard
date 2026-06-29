@@ -1,25 +1,45 @@
-"""Provenance Guard — Flask API (Milestone 3).
+"""Provenance Guard — Flask API.
 
 Routes:
-    GET  /health   liveness check
-    POST /submit   classify text with Signal 1 (Groq) and log the decision
-    GET  /log      most recent audit-log entries
-
-Stylometric signal, confidence combination, appeals, and rate limiting arrive
-in later milestones. For M3, confidence == the Groq ai_probability.
+    GET  /health    liveness check
+    POST /submit    classify text (Groq + stylometric), score, log  [rate limited]
+    GET  /log       most recent audit-log entries
+    POST /appeal    contest a classification; flips status to under_review
+    GET  /appeals   reviewer queue of under_review items
 """
 
 import uuid
 
 from flask import Flask, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
-from config import LABELS
+from config import LABELS, RATE_LIMIT
 from detector import detect_ai
 from stylometric import detect_stylometric
 from scoring import combine
-from auditor import log_submission, read_log
+from auditor import (
+    find_submission,
+    log_appeal,
+    log_submission,
+    read_appeals,
+    read_log,
+)
 
 app = Flask(__name__)
+
+# Rate limiting — applied per-route below (only /submit), so no default limits.
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
+
+@app.errorhandler(429)
+def ratelimit_exceeded(e):
+    return jsonify({"error": f"Rate limit exceeded: {e.description}"}), 429
 
 
 def label_for(attribution: str) -> str:
@@ -34,6 +54,7 @@ def health():
 
 
 @app.route("/submit", methods=["POST"])
+@limiter.limit(RATE_LIMIT)
 def submit():
     data = request.get_json(silent=True) or {}
     text = data.get("text")
@@ -63,6 +84,7 @@ def submit():
         creator_id=creator_id,
         attribution=attribution,
         confidence=confidence,
+        label=label,
         llm_ai_probability=llm["ai_probability"],
         llm_status=llm["status"],
         stylometric_ai_probability=stylo["ai_probability"],
@@ -96,6 +118,47 @@ def submit():
 @app.route("/log", methods=["GET"])
 def log():
     return jsonify({"entries": read_log()})
+
+
+@app.route("/appeal", methods=["POST"])
+def appeal():
+    data = request.get_json(silent=True) or {}
+    content_id = data.get("content_id")
+    creator_id = data.get("creator_id")
+    creator_reasoning = data.get("creator_reasoning")
+
+    # --- validation ---
+    if not isinstance(content_id, str) or not content_id.strip():
+        return jsonify({"error": "Field 'content_id' is required."}), 400
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        return jsonify({"error": "Field 'creator_id' is required."}), 400
+    if not isinstance(creator_reasoning, str) or not creator_reasoning.strip():
+        return jsonify({"error": "Field 'creator_reasoning' is required."}), 400
+
+    # --- ownership checks against the original submission ---
+    original = find_submission(content_id)
+    if original is None:
+        return jsonify({"error": f"No submission found for content_id '{content_id}'."}), 404
+    if original["creator_id"] != creator_id:
+        return jsonify(
+            {"error": "creator_id does not match the original submission."}
+        ), 403
+
+    # --- record the appeal (status -> under_review) ---
+    log_appeal(content_id, creator_id, creator_reasoning, original)
+
+    return jsonify(
+        {
+            "content_id": content_id,
+            "status": "under_review",
+            "message": "Appeal received. Content is now under review.",
+        }
+    )
+
+
+@app.route("/appeals", methods=["GET"])
+def appeals():
+    return jsonify({"entries": read_appeals()})
 
 
 if __name__ == "__main__":
