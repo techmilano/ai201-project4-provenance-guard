@@ -79,6 +79,38 @@ def log_submission(
     return entry
 
 
+def log_metadata_submission(
+    content_id: str,
+    creator_id: str,
+    attribution: str,
+    confidence: float,
+    label: str,
+    metadata_signals: dict,
+    notes=None,
+) -> dict:
+    """Append a structured metadata-submission entry (event_type='metadata_submission')."""
+    entry = _append(
+        {
+            "timestamp": _timestamp(),
+            "event_type": "metadata_submission",
+            "content_type": "metadata",
+            "content_id": content_id,
+            "creator_id": creator_id,
+            "attribution": attribution,
+            "confidence": confidence,
+            "label": label,
+            "metadata_signals": metadata_signals,
+            "notes": notes or [],
+            "status": "classified",
+        }
+    )
+    print(
+        f"[LOGGED] metadata_submission {attribution} conf={confidence} "
+        f"content_id={content_id}"
+    )
+    return entry
+
+
 def find_submission(content_id: str):
     """Return the submission entry for `content_id`, or None if not found."""
     for entry in _read_all():

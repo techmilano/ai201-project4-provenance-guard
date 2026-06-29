@@ -17,15 +17,23 @@ from flask import Flask, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-from config import LABELS, RATE_LIMIT, VERIFY_MAX_AI_PROBABILITY, VERIFY_MIN_WORDS
+from config import (
+    LABELS,
+    METADATA_TEXT_WEIGHT,
+    RATE_LIMIT,
+    VERIFY_MAX_AI_PROBABILITY,
+    VERIFY_MIN_WORDS,
+)
 from detector import detect_ai
 from stylometric import detect_stylometric
 from phrase_signal import detect_phrases
+from metadata_signal import score_metadata
 from scoring import combine
 from analytics import compute, render_dashboard
 from auditor import (
     find_submission,
     log_appeal,
+    log_metadata_submission,
     log_submission,
     log_verification_attempt,
     read_all,
@@ -149,6 +157,107 @@ def submit():
 @app.route("/log", methods=["GET"])
 def log():
     return jsonify({"entries": read_log()})
+
+
+@app.route("/submit-metadata", methods=["POST"])
+def submit_metadata():
+    """Second content type (stretch 4): classify structured creation metadata.
+
+    The free-text fields run through the same ensemble; a contextual metadata
+    heuristic is blended in. Metadata is weaker evidence than the work itself, so
+    every result is flagged as contextual, not proof of authorship.
+    """
+    data = request.get_json(silent=True) or {}
+    creator_id = data.get("creator_id")
+    title = data.get("title")
+    description = data.get("description")
+    creation_notes = data.get("creation_notes")
+    tools_used = data.get("tools_used")
+    declared_ai_assistance = data.get("declared_ai_assistance")
+
+    # --- validation ---
+    for name, value in (
+        ("creator_id", creator_id),
+        ("title", title),
+        ("description", description),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            return jsonify({"error": f"Field '{name}' is required."}), 400
+    if tools_used is not None and not isinstance(tools_used, list):
+        return jsonify({"error": "Field 'tools_used' must be a list."}), 400
+    if declared_ai_assistance is not None and not isinstance(declared_ai_assistance, bool):
+        return jsonify({"error": "Field 'declared_ai_assistance' must be a boolean."}), 400
+
+    content_id = str(uuid.uuid4())
+
+    # --- 1) text ensemble over the normalized free-text fields ---
+    analysis_text = f"{title}. {description} {creation_notes or ''}".strip()
+    llm = detect_ai(analysis_text)
+    stylo = detect_stylometric(analysis_text)
+    phrase = detect_phrases(analysis_text)
+    text_decision = combine(llm, stylo, phrase)
+
+    # --- 2) metadata context heuristic over the structured fields ---
+    meta = score_metadata(
+        description, creation_notes, tools_used, bool(declared_ai_assistance)
+    )
+
+    # --- blend (config-tunable) ---
+    confidence = round(
+        METADATA_TEXT_WEIGHT * text_decision["confidence"]
+        + (1 - METADATA_TEXT_WEIGHT) * meta["score"],
+        4,
+    )
+    attribution = (
+        "likely_ai"
+        if confidence >= 0.70
+        else "likely_human"
+        if confidence <= 0.25
+        else "uncertain"
+    )
+    label = label_for(attribution)
+
+    notes = list(text_decision["notes"])
+    notes.append("metadata analysis is contextual and not proof of authorship")
+
+    metadata_signals = {
+        "metadata_context": {
+            "score": meta["score"],
+            "breakdown": meta["breakdown"],
+            "declared_ai_assistance": bool(declared_ai_assistance),
+            "tools_used": tools_used or [],
+        },
+        "text_analysis": {
+            "confidence": text_decision["confidence"],
+            "llm_ai_probability": llm["ai_probability"],
+            "stylometric_ai_probability": stylo["ai_probability"],
+            "phrase_ai_probability": phrase["ai_probability"],
+        },
+        "blend": {"text_weight": METADATA_TEXT_WEIGHT},
+    }
+
+    log_metadata_submission(
+        content_id=content_id,
+        creator_id=creator_id,
+        attribution=attribution,
+        confidence=confidence,
+        label=label,
+        metadata_signals=metadata_signals,
+        notes=notes,
+    )
+
+    return jsonify(
+        {
+            "content_id": content_id,
+            "content_type": "metadata",
+            "creator_id": creator_id,
+            "attribution": attribution,
+            "confidence": confidence,
+            "label": label,
+            "metadata_signals": metadata_signals,
+            "notes": notes,
+        }
+    )
 
 
 @app.route("/appeal", methods=["POST"])

@@ -30,6 +30,10 @@ PHRASE_WEIGHT = 0.15
 VOTE_THRESHOLD = 0.60
 VOTE_MIN_SIGNALS = 2
 
+# Multi-modal metadata (stretch 4): blend of the text ensemble and the metadata
+# context heuristic. confidence = TEXT*text_ensemble + (1-TEXT)*metadata_score.
+METADATA_TEXT_WEIGHT = 0.5
+
 # --- Attribution thresholds (planning.md) ---
 # AI_THRESHOLD lowered 0.85 -> 0.70 after M4 calibration: at 0.85, likely_ai was
 # practically unreachable (clear AI scored ~0.71–0.76). 0.70 keeps the system

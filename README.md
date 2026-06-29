@@ -104,6 +104,7 @@ reviewer inspects the queue via `GET /appeals`.
 | POST | `/verification-challenge` | no | Request a writing challenge to earn the Verified Human credential (stretch). Body: `{ creator_id }`. |
 | POST | `/verify` | no | Submit a challenge response. Body: `{ creator_id, challenge_id, response_text }`. Grants the credential or returns `403` (stretch). |
 | GET | `/creators/<creator_id>` | no | A creator's Verified Human status (stretch). |
+| POST | `/submit-metadata` | no | Classify a second content type — structured creation metadata (stretch). Body: `{ creator_id, title, description, creation_notes?, tools_used?, declared_ai_assistance? }`. |
 
 `GET /log`, `GET /appeals`, `GET /analytics`, and `GET /dashboard` exist for
 documentation and grading visibility; in a real deployment they would require
@@ -685,6 +686,70 @@ Appeals and rate limiting are unchanged.
 
 ---
 
+## Stretch Feature: Multi-Modal Support (structured metadata)
+
+Extends the pipeline to a **second content type** — structured *creation
+metadata* — alongside free text. Instead of classifying a finished piece of
+writing, `POST /submit-metadata` analyzes the context a creator declares about
+*how* a work was made: `title`, `description`, `creation_notes`, `tools_used`,
+and a `declared_ai_assistance` flag. (`creator_id`, `title`, `description` are
+required; `tools_used` must be a list and `declared_ai_assistance` a boolean if
+provided.)
+
+The metadata endpoint combines two sources of evidence: the existing
+three-signal text ensemble runs on normalized metadata text, while a
+metadata-specific heuristic scores structured fields such as declared AI
+assistance, tools used, missing creation notes, and generic descriptions. The
+final metadata confidence uses a 50/50 blend so the endpoint stays consistent
+with the text pipeline while still taking advantage of structured provenance
+fields.
+
+**Two sub-analyses, blended.** Each metadata submission is scored two ways and
+combined:
+
+1. **Text ensemble** — the free-text fields are normalized into one
+   `analysis_text` string and run through the **existing LLM + stylometric +
+   phrase ensemble, unchanged**.
+2. **Metadata context heuristic** ([metadata_signal.py](metadata_signal.py)) — a
+   transparent score over the structured fields: starts at `0.5`; `+0.35` if AI
+   assistance is declared; `+0.25` if `tools_used` names an AI tool (chatgpt,
+   claude, gemini, copilot, openai, groq); `+0.10` if creation notes are
+   missing/short; `-0.15` if notes are detailed; `+0.10` if the description is
+   very generic; clamped to `[0,1]`. It returns the exact factors that fired.
+
+```
+confidence = 0.5 * text_ensemble_confidence + 0.5 * metadata_context_score
+```
+
+The same thresholds apply (`>= 0.70` likely_ai, `<= 0.25` likely_human, else
+uncertain). Worked examples — no-AI/detailed-notes → `likely_human`, declared AI
+→ `likely_ai`, missing notes → `uncertain` — are in
+[sample_outputs/stretch_metadata_verification.md](sample_outputs/stretch_metadata_verification.md).
+Metadata submissions are logged with `event_type: "metadata_submission"`.
+
+**Design choices (documented in [planning.md](planning.md)):**
+
+- **Reuse the ensemble, no modality-specific markers.** The metadata text runs
+  through the same three signals as `/submit`. We deliberately did *not* add
+  modality-specific lexical markers (e.g. image-caption phrases like *"an image
+  of"*): those are normal description language, not reliable AI-authorship
+  signals, and would raise false positives and need fresh calibration. One
+  scoring model stays consistent across content types.
+- **Contextual, not proof.** Metadata describes how a work was made, not the work
+  itself, so it is weaker evidence. Every metadata result carries the note
+  *"metadata analysis is contextual and not proof of authorship,"* and the
+  metadata heuristic alone can never reach `likely_human` (its floor is `0.35`) —
+  it can raise suspicion but never clear someone by itself.
+
+This endpoint does not inspect image pixels, audio, or raw media files. It
+analyzes structured provenance metadata and image-description-style text supplied
+by the creator, so the result is contextual provenance analysis rather than proof
+of authorship.
+
+Appeals, rate limiting, and the text `/submit` endpoint are unchanged.
+
+---
+
 ## Repository Layout
 
 ```
@@ -693,6 +758,7 @@ config.py        # constants: model, log path, weights, thresholds, labels
 detector.py      # Signal 1 — Groq LLM classification
 stylometric.py   # Signal 2 — stylometric heuristics
 phrase_signal.py # Signal 3 — phrase-pattern (ensemble stretch)
+metadata_signal.py # multi-modal stretch — structured-metadata context heuristic
 scoring.py       # combine 3 signals -> confidence -> attribution (+ voting rule)
 auditor.py       # structured .jsonl audit log: submissions + appeals + verifications
 analytics.py     # stretch feature 1 — analytics dashboard (/analytics, /dashboard)
