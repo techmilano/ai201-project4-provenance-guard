@@ -515,3 +515,74 @@ verified submit shows badge → verified creator's AI-like text still scores
 
 Documented in the README stretch section and in
 `sample_outputs/stretch_certificate_verification.md`.
+
+## Stretch Feature 3 — Ensemble Detection (third signal + voting)
+
+### Goal
+
+Move from two signals to a **three-signal ensemble** with a documented weighting
+**and** a voting rule, satisfying the "3+ signals" stretch. The third signal is a
+cheap, fully independent lexical check that complements the existing semantic
+(LLM) and structural (stylometric) signals.
+
+### Signal 3 — Phrase-pattern signal
+
+- **File:** `phrase_signal.py` (pure Python, no API — always `available`).
+- **Measures:** density of common AI-style filler phrases / markers (e.g.
+  *"it is important to note"*, *"rapidly evolving"*, *"paradigm shift"*,
+  *"furthermore"*, *"leverage"*, *"delve into"*). These are lexical tells that are
+  independent of both the holistic semantic read and the structural metrics.
+- **Output:**
+  ```json
+  { "ai_probability": float, "status": "available",
+    "matched_phrases": [...], "reasoning": "..." }
+  ```
+- **Normalization (conservative):** score is based on the **number of distinct
+  matched phrases relative to text length** (matches per ~100 words), scaled so
+  it takes several markers to approach a high score. A **single phrase is capped
+  low** (≤ ~0.30) so one incidental match can never, by itself, push the ensemble
+  toward `likely_ai`.
+- **Blind spot:** keyword lists are easily evaded (synonyms, paraphrase) and can
+  false-positive on legitimate formal/academic human writing that happens to use
+  these connectives — which is exactly why its weight is small and the voting
+  rule requires corroboration.
+
+### Updated combination (three-signal weighting)
+
+```text
+combined = 0.55 * llm + 0.30 * stylometric + 0.15 * phrase_pattern
+```
+
+The LLM remains the strongest signal; stylometric is the independent
+corroborator; the phrase signal is a light-weight lexical tie-breaker. Thresholds
+are unchanged: `>= 0.70` → `likely_ai`, `<= 0.25` → `likely_human`, else
+`uncertain`. When a signal is unavailable (LLM down, or stylometric on
+short text), the remaining signal weights are renormalized.
+
+### False-positive-averse ensemble (voting) rule
+
+`likely_ai` now requires **both**:
+
+1. `combined >= 0.70`, **and**
+2. **at least two of the three signals individually `>= 0.60`.**
+
+If `combined >= 0.70` but fewer than two signals clear `0.60`, the verdict is
+forced to `uncertain` with note `ensemble_insufficient_votes_forced_uncertain`.
+This means a single strong signal (or one strong signal plus weak corroboration)
+can never produce an AI accusation — corroboration by independent signals is
+required. The existing overrides remain (short-text → uncertain, LLM/stylometric
+disagreement → uncertain); like before, every override only ever moves a verdict
+*toward* uncertain.
+
+### Integration
+
+`/submit` (and the `/verify` challenge scorer) run all three signals and call the
+updated `combine(llm, stylo, phrase)`. The response `signals` block gains a
+`phrase` entry (`ai_probability`, `status`, `matched_phrases`), and the audit log
+gains `phrase_ai_probability`, `phrase_status`, and `matched_phrases`. Appeals and
+rate limiting are unchanged.
+
+### Documentation
+
+README scoring section (updated weights + voting rule + Signal 3) and
+`sample_outputs/stretch_ensemble_verification.md`.
