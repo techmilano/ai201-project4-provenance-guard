@@ -23,7 +23,10 @@ LLM_WEIGHT = 0.6
 STYLO_WEIGHT = 0.4
 
 # --- Attribution thresholds (planning.md) ---
-AI_THRESHOLD = 0.85       # combined score >= this -> likely_ai
+# AI_THRESHOLD lowered 0.85 -> 0.70 after M4 calibration: at 0.85, likely_ai was
+# practically unreachable (clear AI scored ~0.71–0.76). 0.70 keeps the system
+# false-positive averse while making all three labels reachable.
+AI_THRESHOLD = 0.70       # combined score >= this -> likely_ai
 HUMAN_THRESHOLD = 0.25    # combined score <= this -> likely_human
 DISAGREE_DELTA = 0.50     # |llm - stylo| > this -> force uncertain (Milestone 4)
 MIN_WORDS = 40            # below this, stylometry is unstable (Milestone 4)

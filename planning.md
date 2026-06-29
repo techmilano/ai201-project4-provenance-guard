@@ -118,7 +118,7 @@ LLM_MODEL      = "llama-3.3-70b-versatile"   # same model as Labs 1–3 / Repair
 LOG_FILE       = "logs/audit.jsonl"
 LLM_WEIGHT     = 0.6
 STYLO_WEIGHT   = 0.4
-AI_THRESHOLD   = 0.85       # >= this -> likely_ai
+AI_THRESHOLD   = 0.70       # >= this -> likely_ai (lowered from 0.85 in M4; see note below)
 HUMAN_THRESHOLD = 0.25      # <= this -> likely_human
 DISAGREE_DELTA = 0.50       # |llm - stylo| > this -> force uncertain
 MIN_WORDS      = 40         # below this, stylometry is unstable -> uncertain
@@ -166,16 +166,18 @@ A false positive — labeling a human's work as AI — is the worst outcome on a
 
 | Combined score | Attribution | Category |
 |---|---|---|
-| `>= 0.85` | `likely_ai` | High-confidence AI |
-| `0.25 < score < 0.85` | `uncertain` | Uncertain |
+| `>= 0.70` | `likely_ai` | High-confidence AI |
+| `0.25 < score < 0.70` | `uncertain` | Uncertain |
 | `<= 0.25` | `likely_human` | High-confidence human |
 
 Plus the disagreement rule above, which can force `uncertain` from inside either confident band.
 
+> **Calibration note (M4).** The AI threshold started at `0.85`. During Milestone 4 testing this made `likely_ai` practically unreachable on real text: clear AI examples scored only ~`0.71–0.76` combined, because the LLM rarely returns above ~`0.9` and the stylometric signal often *disagrees* on AI prose (GPT-style writing has varied sentence lengths and rich vocabulary, so only punctuation density flags it). With the bar at `0.85` the system would only ever output `uncertain` or `likely_human`. Lowering the bar to `0.70` makes all three labels reachable while remaining false-positive averse — on the calibration set no human or borderline-human input is misclassified (borderline formal human scored `0.59` → still `uncertain`). `HUMAN_THRESHOLD` (`0.25`), the weights (`0.6/0.4`), and the disagreement rule are unchanged.
+
 ### What a given score means
 
 - **0.95** → strong, corroborated AI signal → high-confidence AI label.
-- **0.6** → leans AI but below the 0.85 bar → **uncertain** label, *not* an AI accusation. This is the design intent of hint #2: 0.5–0.6 means "we don't know," shown honestly rather than rounded into a verdict.
+- **0.6** → leans AI but below the 0.70 bar → **uncertain** label, *not* an AI accusation. This is the design intent of hint #2: 0.5–0.6 means "we don't know," shown honestly rather than rounded into a verdict.
 - **0.15** → both signals read human → high-confidence human label.
 
 Calibration is validated empirically in M4 using the four spec-provided test inputs (clear AI, clear human, two borderline) plus printing both raw signal scores to confirm the combined score moves meaningfully across them rather than clustering.
@@ -252,7 +254,7 @@ Recording both individual signal scores (`llm_score`, `stylometric_score`) and `
 
 ## Anticipated Edge Cases
 
-1. **Minimalist / repetitive poetry.** A short poem with heavy repetition and simple vocabulary produces a low type-token ratio and low sentence-length variance — the stylometric signal reads this as AI-like uniformity and false-flags a human poet. *Mitigation:* the LLM signal (weighted 0.6) usually recognizes creative voice; the high 0.85 AI bar and wide uncertain band keep most such cases out of `likely_ai`; the appeal path is the backstop.
+1. **Minimalist / repetitive poetry.** A short poem with heavy repetition and simple vocabulary produces a low type-token ratio and low sentence-length variance — the stylometric signal reads this as AI-like uniformity and false-flags a human poet. *Mitigation:* the LLM signal (weighted 0.6) usually recognizes creative voice; the 0.70 AI bar and wide uncertain band keep most such cases out of `likely_ai`; the appeal path is the backstop.
 
 2. **Non-native-English or formal/academic human writing.** Uniform, formal, low-variance prose (the exact profile of the M5 appeal test case) leans AI on *both* signals, so the disagreement rule won't save it. *Mitigation:* false-positive-averse thresholds push borderline results to `uncertain` rather than `likely_ai`; the uncertain label names the appeal route.
 

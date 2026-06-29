@@ -24,6 +24,9 @@ def log_submission(
     confidence: float,
     llm_ai_probability: float,
     llm_status: str,
+    stylometric_ai_probability: float,
+    stylometric_status: str,
+    notes=None,
 ) -> dict:
     """Append a structured submission entry to the audit log and return it."""
     entry = {
@@ -35,6 +38,9 @@ def log_submission(
         "confidence": confidence,
         "llm_ai_probability": llm_ai_probability,
         "llm_status": llm_status,
+        "stylometric_ai_probability": stylometric_ai_probability,
+        "stylometric_status": stylometric_status,
+        "notes": notes or [],
         "status": "classified",
     }
 

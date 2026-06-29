@@ -13,20 +13,13 @@ import uuid
 
 from flask import Flask, jsonify, request
 
-from config import AI_THRESHOLD, HUMAN_THRESHOLD, LABELS
+from config import LABELS
 from detector import detect_ai
+from stylometric import detect_stylometric
+from scoring import combine
 from auditor import log_submission, read_log
 
 app = Flask(__name__)
-
-
-def attribution_for(score: float) -> str:
-    """Map a confidence score to an attribution category (planning.md thresholds)."""
-    if score >= AI_THRESHOLD:
-        return "likely_ai"
-    if score <= HUMAN_THRESHOLD:
-        return "likely_human"
-    return "uncertain"
 
 
 def label_for(attribution: str) -> str:
@@ -54,10 +47,14 @@ def submit():
 
     content_id = str(uuid.uuid4())
 
-    # --- Signal 1: Groq LLM detection ---
-    signal = detect_ai(text)
-    confidence = signal["ai_probability"]  # M3: confidence == Groq probability
-    attribution = attribution_for(confidence)
+    # --- detection signals ---
+    llm = detect_ai(text)                  # Signal 1: Groq LLM (semantic)
+    stylo = detect_stylometric(text)       # Signal 2: stylometric (structural)
+
+    # --- combined confidence scoring ---
+    decision = combine(llm, stylo)
+    confidence = decision["confidence"]
+    attribution = decision["attribution"]
     label = label_for(attribution)
 
     # --- audit log ---
@@ -66,8 +63,11 @@ def submit():
         creator_id=creator_id,
         attribution=attribution,
         confidence=confidence,
-        llm_ai_probability=signal["ai_probability"],
-        llm_status=signal["status"],
+        llm_ai_probability=llm["ai_probability"],
+        llm_status=llm["status"],
+        stylometric_ai_probability=stylo["ai_probability"],
+        stylometric_status=stylo["status"],
+        notes=decision["notes"],
     )
 
     return jsonify(
@@ -76,12 +76,18 @@ def submit():
             "attribution": attribution,
             "confidence": confidence,
             "label": label,
+            "notes": decision["notes"],
             "signals": {
                 "llm": {
-                    "ai_probability": signal["ai_probability"],
-                    "reasoning": signal["reasoning"],
-                    "status": signal["status"],
-                }
+                    "ai_probability": llm["ai_probability"],
+                    "reasoning": llm["reasoning"],
+                    "status": llm["status"],
+                },
+                "stylometric": {
+                    "ai_probability": stylo["ai_probability"],
+                    "status": stylo["status"],
+                    "metrics": stylo["metrics"],
+                },
             },
         }
     )
