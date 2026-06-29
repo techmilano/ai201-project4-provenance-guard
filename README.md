@@ -5,9 +5,10 @@ A Flask API backend that classifies submitted text as **likely AI-generated**,
 platform that wants to provide attribution transparency without unfairly
 punishing creators.
 
-Provenance Guard combines two independent detection signals into a single
-confidence score, turns that score into a plain-language transparency label for
-readers, records every decision in a structured audit log, and lets creators
+Provenance Guard combines a three-signal ensemble — Groq LLM classification,
+stylometric heuristics, and phrase-pattern detection — into a single
+AI-probability score, turns that score into a plain-language transparency label
+for readers, records every decision in a structured audit log, and lets creators
 appeal a classification they believe is wrong.
 
 > Design principle: on a creative platform, **falsely accusing a human of using
@@ -23,8 +24,8 @@ Perfect AI detection is an unsolved problem, so Provenance Guard is built to
 **communicate uncertainty honestly** rather than force a binary verdict. It:
 
 - accepts text through a `POST /submit` endpoint,
-- scores it with a Groq LLM signal (semantic) **and** a stylometric signal
-  (structural),
+- scores it with a Groq LLM signal, a stylometric signal, and a phrase-pattern
+  signal,
 - combines them into a calibrated confidence score,
 - maps the score to one of three transparency labels,
 - logs the decision to an append-only JSON Lines audit log, and
@@ -45,12 +46,13 @@ Client
   v
 Flask API ── validate request ── generate content_id (uuid)
   v
-Detection signals (run on the same text)
-  ├─ Signal 1: Groq LLM classification   -> ai_probability 0.0–1.0
-  └─ Signal 2: Stylometric heuristics     -> ai_probability 0.0–1.0
+Detection signals
+  ├─ Signal 1: Groq LLM classification       -> ai_probability 0.0–1.0
+  ├─ Signal 2: Stylometric heuristics        -> ai_probability 0.0–1.0
+  └─ Signal 3: Phrase-pattern detection      -> ai_probability 0.0–1.0
   v
-Confidence scoring  ── combined = 0.6*llm + 0.4*stylometric
-  v                    (+ false-positive-averse overrides)
+Confidence scoring  ── combined = 0.55*llm + 0.30*stylometric + 0.15*phrase
+  v                    (+ ensemble voting rule + short-text override)
 Attribution + transparency label  ── likely_ai / uncertain / likely_human
   v
 Audit log (logs/audit.jsonl)  ── structured submission entry

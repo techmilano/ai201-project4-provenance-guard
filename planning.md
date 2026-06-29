@@ -1,5 +1,9 @@
 # Provenance Guard Planning
 
+> Final implementation note: the core Milestone 4 system began with two signals, but the stretch implementation upgrades the final system to a three-signal ensemble: Groq LLM classification, stylometric heuristics, and phrase-pattern detection. The final scoring weights are `0.55 / 0.30 / 0.15`, and the old pairwise disagreement rule is replaced by a three-signal voting rule.
+>
+> The "Detection Signals", "Uncertainty Representation", and "Architecture" sections below describe the original two-signal Milestone 4 design (preserved as the planning record); see *Stretch Feature 3 — Ensemble Detection* and *Stretch Feature 4 — Multi-Modal Support* for the final state.
+
 ## Project Overview
 
 Provenance Guard is a Flask API backend that classifies submitted text content as likely AI-generated, likely human-written, or uncertain. The system is designed for a creative writing platform that wants to provide attribution transparency without unfairly punishing creators.
