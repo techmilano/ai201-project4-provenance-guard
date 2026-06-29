@@ -586,3 +586,86 @@ rate limiting are unchanged.
 
 README scoring section (updated weights + voting rule + Signal 3) and
 `sample_outputs/stretch_ensemble_verification.md`.
+
+## Stretch Feature 4 — Multi-Modal Support (structured metadata)
+
+### Goal
+
+Extend the pipeline to handle a **second content type** — structured creation
+**metadata** — in addition to free text. Instead of classifying a finished piece
+of writing, this analyzes the *context a creator declares about how a work was
+made* (title, description, creation notes, tools used, and a self-declaration of
+AI assistance).
+
+Second content type is **structured metadata, not image files.**
+
+### Design choice — reuse the ensemble, do not add modality-specific markers
+
+The free-text fields of the metadata are normalized into a single
+`analysis_text` string and passed through the **existing LLM + stylometric +
+phrase ensemble unchanged**. We deliberately do **not** add modality-specific
+lexical markers (e.g. image-caption phrases): those would be normal description
+language, not reliable AI-authorship signals, and would raise false positives and
+require fresh calibration. Keeping one scoring model across content types keeps
+the system consistent and the comparison meaningful.
+
+### New endpoint
+
+`POST /submit-metadata`
+
+```json
+{
+  "creator_id": "alice",
+  "title": "...",
+  "description": "...",
+  "creation_notes": "...",
+  "tools_used": ["notebook", "Google Docs"],
+  "declared_ai_assistance": false
+}
+```
+
+**Validation:** `creator_id`, `title`, `description` required; `tools_used` must
+be a list if provided; `declared_ai_assistance` must be boolean if provided.
+
+### Two sub-analyses, blended
+
+1. **Text ensemble.** `analysis_text = "{title}. {description} {creation_notes}"`
+   runs through `detect_ai` + `detect_stylometric` + `detect_phrases` +
+   `combine()` → `text_confidence`.
+2. **Metadata context signal** (`metadata_signal.py`), a transparent heuristic
+   over the structured fields:
+   - start at `0.5`
+   - `declared_ai_assistance` is true → `+0.35`
+   - `tools_used` contains an AI tool (chatgpt, claude, gemini, copilot, openai,
+     groq) → `+0.25`
+   - `creation_notes` missing or `< 20` chars → `+0.10`
+   - `creation_notes` detailed (`> 80` chars) → `-0.15`
+   - `description` very generic (`< 6` words) → `+0.10`
+   - clamp to `[0.0, 1.0]`; returns the score **and** a breakdown of which
+     factors fired.
+
+**Blend:** `confidence = 0.5 * text_confidence + 0.5 * metadata_score`. The
+ensemble catches AI-sounding prose; the metadata context catches declared /
+tool-based / under-documented signals; neither alone is authoritative, so they
+are weighted equally. (Weight is a single constant, easy to tune.)
+
+### Classification & honesty
+
+Same thresholds (`>= 0.70` likely_ai, `<= 0.25` likely_human, else uncertain).
+Because metadata is weaker evidence than analyzing the work itself, every
+metadata result carries a note that **metadata analysis is contextual and not
+proof of authorship.**
+
+### Response & audit
+
+Response: `{ content_id, content_type: "metadata", creator_id, attribution,
+confidence, label, metadata_signals: { metadata_context, text_analysis }, notes }`.
+Audit: `event_type: "metadata_submission"` with `content_type`, `content_id`,
+`creator_id`, `attribution`, `confidence`, the metadata signal details + text
+ensemble scores, `label`, `notes`, `status: "classified"`. Appeals, rate
+limiting, and the text `/submit` endpoint are unchanged.
+
+### Documentation
+
+README multi-modal section and `sample_outputs/stretch_metadata_verification.md`
+(no-AI + detailed notes; declared AI assistance; missing creation notes).
