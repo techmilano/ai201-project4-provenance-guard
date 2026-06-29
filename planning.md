@@ -405,3 +405,113 @@ Neither endpoint is rate limited (read-only, no external API calls).
 
 Per the brief, completing a stretch feature requires documenting it in the
 README (what it does and how it works) in addition to this planning entry.
+
+## Stretch Feature 2 — Provenance Certificate (Verified Human)
+
+### Goal
+
+A creator can earn a **"Verified Human" credential** through an additional
+verification step, and that credential is displayed on their submitted content.
+
+This is a **creator-level** credential, deliberately separate from the
+**content-level** attribution. Attribution answers *"was this text
+AI-generated?"*; the certificate answers *"has this creator proven they're a real
+human author?"* The two are shown together but **the certificate never overrides
+attribution or confidence** — a verified creator who submits AI-like text still
+gets a `likely_ai` result. That separation is the central design decision (it
+prevents the badge from becoming a laundering channel for AI content).
+
+### Earning method — live writing challenge
+
+The credential is *earned*, not asserted, by reusing the system's own detection
+pipeline:
+
+1. The creator requests a challenge; the system issues a random writing prompt
+   and a `challenge_id` with a short expiry.
+2. The creator writes an original response on the spot and submits it.
+3. The system runs the response through the **same** pipeline (Groq + stylometric
+   + `scoring.combine`). If it is long enough and scores human enough, the
+   credential is granted.
+
+**Blind spot (documented honestly):** the challenge is gameable by pasting
+human-written or lightly-edited text the creator didn't author live. A real
+deployment would add liveness/proctoring; here it demonstrates the *mechanism*.
+The one-attempt-per-challenge rule (a challenge is consumed when scored) and the
+short expiry raise the cost of brute-forcing.
+
+### Storage
+
+Creator and challenge state are **keyed, mutable** records — a poor fit for the
+append-only audit log — so they live in two small JSON files (the existing
+`store.py`-style local-JSON approach):
+
+- `data/creators.json` — `creator_id -> certificate record`
+- `data/challenges.json` — `challenge_id -> pending challenge`
+
+Both are runtime state and are git-ignored; `data/.gitkeep` keeps the directory.
+Every verification *attempt* (granted or rejected) is additionally logged to the
+audit log as an `event_type: "verification"` entry, so the credential trail is
+auditable alongside submissions and appeals.
+
+### Config additions
+
+```python
+CREATORS_FILE            = "data/creators.json"
+CHALLENGES_FILE          = "data/challenges.json"
+VERIFY_MIN_WORDS         = 80     # challenge response must be a real piece of writing
+VERIFY_MAX_AI_PROBABILITY = 0.30  # response must score human enough to pass
+CHALLENGE_EXPIRES_MINUTES = 15
+CHALLENGE_PROMPTS = [ ... ]        # random prompt per challenge
+```
+
+### Endpoints
+
+| Method | Path | Accepts | Returns |
+|---|---|---|---|
+| POST | `/verification-challenge` | `{ creator_id }` | `{ creator_id, challenge_id, prompt, expires_at }` (or current status if already verified) |
+| POST | `/verify` | `{ creator_id, challenge_id, response_text }` | granted credential, or `403` with reason |
+| GET | `/creators/<creator_id>` | — | the creator's certificate status |
+
+`POST /verify` validation order: required fields (`400`) → challenge exists
+(`404`) → challenge belongs to creator / not expired / not used (`403`) →
+`>= VERIFY_MIN_WORDS` (`403`) → pipeline score `<= VERIFY_MAX_AI_PROBABILITY`
+(grant, else `403`). The challenge is consumed once a scored attempt runs.
+
+### Display on content
+
+`POST /submit` looks up the creator and attaches a `provenance_certificate`
+block to **both** the JSON response and the submission audit entry:
+
+```json
+"provenance_certificate": { "verified_human": true, "badge": "✓ Verified Human Creator", "verified_at": "...Z" }
+```
+
+Unverified creators get `{ "verified_human": false, "badge": null, "verified_at": null }`.
+`GET /appeals` surfaces the original submission's certificate where available, and
+`/analytics` gains `verified_creators` and `submissions_from_verified_creators`
+(count + percentage).
+
+### Edge cases
+
+- **Already verified:** `/verification-challenge` returns the existing status
+  instead of issuing a new challenge (idempotent).
+- **Expired / used / wrong-creator challenge:** rejected at `/verify` (`403`).
+- **Verified but flagged:** a verified creator's `likely_ai` submission is shown
+  with the badge *and* the AI attribution — surfaced, not silently trusted.
+- **Concurrent writes:** JSON files are written via temp-file + atomic
+  `os.replace` to avoid partial writes.
+
+### AI Tool Plan (this stretch)
+
+Provide this section + the Detection Signals/scoring sections. Ask the AI to
+generate `verification.py` (JSON storage, challenge issue/validate, grant) and
+the three routes, reusing `detect_ai` / `detect_stylometric` / `combine` rather
+than re-implementing detection. Verify with the documented curl sequence:
+unverified submit → challenge → too-short reject → successful verify → status →
+verified submit shows badge → verified creator's AI-like text still scores
+`likely_ai`.
+
+### Documentation
+
+Documented in the README stretch section and in
+`sample_outputs/stretch_certificate_verification.md`.
