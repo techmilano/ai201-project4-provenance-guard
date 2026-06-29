@@ -36,6 +36,18 @@ VALID_ATTRIBUTIONS = {"likely_ai", "uncertain", "likely_human"}
 # --- Rate limiting (applied in Milestone 5) ---
 RATE_LIMIT = "10 per minute;100 per day"
 
+# --- Provenance Certificate (stretch feature 2) ---
+CREATORS_FILE = "data/creators.json"
+CHALLENGES_FILE = "data/challenges.json"
+VERIFY_MIN_WORDS = 80              # challenge response must be a real piece of writing
+VERIFY_MAX_AI_PROBABILITY = 0.30  # response must score human enough to pass
+CHALLENGE_EXPIRES_MINUTES = 15
+CHALLENGE_PROMPTS = [
+    "Write 80 to 150 words about a small real-world moment from your day.",
+    "Write 80 to 150 words about a time you changed your mind about something.",
+    "Write 80 to 150 words describing a place you know well without using generic phrases.",
+]
+
 # --- Transparency labels (verbatim text from planning.md) ---
 LABELS = {
     "likely_ai": {

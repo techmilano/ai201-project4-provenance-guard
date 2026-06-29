@@ -25,9 +25,27 @@ def compute(entries) -> dict:
     """Aggregate audit entries into dashboard metrics (see planning.md)."""
     submissions = [e for e in entries if e.get("event_type") == "submission"]
     appeals = [e for e in entries if e.get("event_type") == "appeal"]
+    verifications = [e for e in entries if e.get("event_type") == "verification"]
 
     total_submissions = len(submissions)
     total_appeals = len(appeals)
+
+    # --- provenance certificate metrics (stretch feature 2) ---
+    verified_creators = len(
+        {
+            e["creator_id"]
+            for e in verifications
+            if e.get("verification_result") == "granted"
+        }
+    )
+    subs_from_verified = sum(
+        1
+        for e in submissions
+        if (e.get("provenance_certificate") or {}).get("verified_human")
+    )
+    subs_from_verified_pct = (
+        round(subs_from_verified / total_submissions, 4) if total_submissions else 0.0
+    )
 
     counts = {a: 0 for a in _ATTRIBUTIONS}
     for e in submissions:
@@ -59,6 +77,9 @@ def compute(entries) -> dict:
         "average_llm_ai_probability": avg_llm,
         "average_stylometric_ai_probability": avg_stylo,
         "most_common_attribution": most_common,
+        "verified_creators": verified_creators,
+        "submissions_from_verified_creators": subs_from_verified,
+        "submissions_from_verified_creators_pct": subs_from_verified_pct,
         "rate_limit": RATE_LIMIT.replace(";", "; "),
     }
 
@@ -98,6 +119,7 @@ def render_dashboard(metrics) -> str:
 
     mca = (metrics["most_common_attribution"] or "—").replace("_", " ")
     appeal_pct = f'{metrics["appeal_rate"] * 100:.1f}%'
+    verified_pct = f'{metrics["submissions_from_verified_creators_pct"] * 100:.1f}%'
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -127,6 +149,8 @@ def render_dashboard(metrics) -> str:
     <div class="card"><div class="n">{metrics['total_appeals']}</div><div class="k">appeals</div></div>
     <div class="card"><div class="n">{appeal_pct}</div><div class="k">appeal rate</div></div>
     <div class="card"><div class="n">{mca}</div><div class="k">most common</div></div>
+    <div class="card"><div class="n">{metrics['verified_creators']}</div><div class="k">verified creators</div></div>
+    <div class="card"><div class="n">{verified_pct}</div><div class="k">subs from verified</div></div>
   </div>
 
   <h2>Detection patterns (attribution counts)</h2>

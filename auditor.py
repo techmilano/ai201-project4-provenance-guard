@@ -44,6 +44,7 @@ def log_submission(
     stylometric_ai_probability: float,
     stylometric_status: str,
     notes=None,
+    provenance_certificate=None,
 ) -> dict:
     """Append a structured submission entry to the audit log and return it."""
     entry = _append(
@@ -60,6 +61,8 @@ def log_submission(
             "stylometric_ai_probability": stylometric_ai_probability,
             "stylometric_status": stylometric_status,
             "notes": notes or [],
+            "provenance_certificate": provenance_certificate
+            or {"verified_human": False, "badge": None, "verified_at": None},
             "status": "classified",
         }
     )
@@ -102,6 +105,34 @@ def log_appeal(content_id: str, creator_id: str, creator_reasoning: str,
     return entry
 
 
+def log_verification_attempt(
+    creator_id: str,
+    challenge_id: str,
+    verification_result: str,
+    ai_probability,
+    word_count,
+    reason: str,
+) -> dict:
+    """Append a verification-attempt entry (event_type='verification')."""
+    entry = _append(
+        {
+            "timestamp": _timestamp(),
+            "event_type": "verification",
+            "creator_id": creator_id,
+            "challenge_id": challenge_id,
+            "verification_result": verification_result,  # "granted" | "rejected"
+            "ai_probability": ai_probability,
+            "word_count": word_count,
+            "reason": reason,
+        }
+    )
+    print(
+        f"[LOGGED] verification {verification_result} creator_id={creator_id} "
+        f"ai_prob={ai_probability} reason={reason}"
+    )
+    return entry
+
+
 def read_log(limit: int = 50) -> list:
     """Return the most recent audit entries (newest first), up to `limit`."""
     return _read_all()[-limit:][::-1]
@@ -113,9 +144,27 @@ def read_all() -> list:
 
 
 def read_appeals() -> list:
-    """Return appealed (under_review) items, newest first, one per content_id."""
+    """Return appealed (under_review) items, newest first, one per content_id.
+
+    Each item is enriched with the original submission's provenance_certificate
+    when available, so the reviewer queue shows the creator's credential.
+    """
+    entries = _read_all()
+    submissions = {
+        e["content_id"]: e for e in entries if e.get("event_type") == "submission"
+    }
     latest = {}
-    for entry in _read_all():
+    for entry in entries:
         if entry.get("event_type") == "appeal":
             latest[entry["content_id"]] = entry  # last appeal per content wins
-    return sorted(latest.values(), key=lambda e: e["timestamp"], reverse=True)
+
+    enriched = []
+    for content_id, appeal in latest.items():
+        sub = submissions.get(content_id)
+        if sub and "provenance_certificate" in sub:
+            appeal = {
+                **appeal,
+                "original_provenance_certificate": sub["provenance_certificate"],
+            }
+        enriched.append(appeal)
+    return sorted(enriched, key=lambda e: e["timestamp"], reverse=True)

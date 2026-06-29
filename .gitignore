@@ -5,3 +5,5 @@ __pycache__/
 audit_log.json
 instance/
 logs/audit.jsonl
+data/creators.json
+data/challenges.json

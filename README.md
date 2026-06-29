@@ -101,6 +101,9 @@ reviewer inspects the queue via `GET /appeals`.
 | GET | `/appeals` | no | Reviewer queue of `under_review` items as `{ "entries": [...] }`. |
 | GET | `/analytics` | no | Aggregated metrics as JSON (stretch feature — see below). |
 | GET | `/dashboard` | no | HTML analytics view (stretch feature — see below). |
+| POST | `/verification-challenge` | no | Request a writing challenge to earn the Verified Human credential (stretch). Body: `{ creator_id }`. |
+| POST | `/verify` | no | Submit a challenge response. Body: `{ creator_id, challenge_id, response_text }`. Grants the credential or returns `403` (stretch). |
+| GET | `/creators/<creator_id>` | no | A creator's Verified Human status (stretch). |
 
 `GET /log`, `GET /appeals`, `GET /analytics`, and `GET /dashboard` exist for
 documentation and grading visibility; in a real deployment they would require
@@ -536,6 +539,76 @@ for full example output.
 
 ---
 
+## Stretch Feature: Provenance Certificate (Verified Human)
+
+A **creator-level "Verified Human" credential**, deliberately distinct from the
+content-level attribution. Attribution answers *"was this text AI-generated?"*;
+the certificate answers *"has this creator proven they're a real human author?"*
+Implemented in [verification.py](verification.py).
+
+**The central design decision:** the certificate is shown alongside content but
+**never overrides attribution or confidence**. A verified creator who submits
+AI-like text still gets a `likely_ai` result *with* their badge displayed — the
+credential cannot launder AI content. (See case 7 in the evidence below.)
+
+### How a creator earns it — live writing challenge
+
+The credential is *earned*, not asserted, by reusing the system's own detection
+pipeline:
+
+1. `POST /verification-challenge { creator_id }` → the system issues a random
+   prompt and a `challenge_id` that expires in 15 minutes.
+2. The creator writes an original response and submits it to
+   `POST /verify { creator_id, challenge_id, response_text }`.
+3. The response is scored by the **same** pipeline (Groq + stylometric +
+   `scoring.combine`). If it is at least `VERIFY_MIN_WORDS` (80) words **and**
+   scores `<= VERIFY_MAX_AI_PROBABILITY` (0.30), the credential is granted.
+
+Validation order on `/verify`: required fields (`400`) → challenge exists
+(`404`) → belongs to creator / unused / unexpired (`403`) → min length (`403`) →
+score check (grant, else `403`). A challenge is **consumed on the first scored
+attempt** (one shot — anti-gaming). Already-verified creators get their status
+back from `/verification-challenge` instead of a new challenge (idempotent).
+
+### How it's displayed on content
+
+Every `POST /submit` response and submission audit entry carries a
+`provenance_certificate` block:
+
+```json
+"provenance_certificate": {
+  "verified_human": true,
+  "badge": "✓ Verified Human Creator",
+  "verified_at": "2026-06-29T...Z"
+}
+```
+
+Unverified creators get `{ "verified_human": false, "badge": null, "verified_at": null }`.
+The `GET /appeals` reviewer queue also surfaces the original submission's
+certificate, and `GET /analytics` adds `verified_creators` and
+`submissions_from_verified_creators` (count + percentage).
+
+### Storage & audit
+
+Creator and challenge records are **keyed, mutable** state — a poor fit for the
+append-only audit log — so they live in two git-ignored JSON files
+(`data/creators.json`, `data/challenges.json`), written via temp-file + atomic
+replace. Every verification *attempt* (granted or rejected) is additionally
+logged to `logs/audit.jsonl` as an `event_type: "verification"` entry, keeping
+the credential trail auditable next to submissions and appeals.
+
+### Honest limitation
+
+The challenge is gameable by pasting human-written text the creator didn't author
+live; a real deployment would add liveness/proctoring. The strict `0.30` grant
+bar is intentional — it is safer to **under-grant** a human badge than to
+over-grant one (the same false-positive-averse philosophy as the core detector),
+though it means a borderline-formal human passage can be rejected on some runs
+due to Groq non-determinism. Full evidence:
+[sample_outputs/stretch_certificate_verification.md](sample_outputs/stretch_certificate_verification.md).
+
+---
+
 ## Repository Layout
 
 ```
@@ -544,9 +617,11 @@ config.py        # constants: model, log path, weights, thresholds, labels
 detector.py      # Signal 1 — Groq LLM classification
 stylometric.py   # Signal 2 — stylometric heuristics
 scoring.py       # combine signals -> confidence -> attribution
-auditor.py       # structured .jsonl audit log: submissions + appeals
-analytics.py     # stretch feature — analytics dashboard (/analytics, /dashboard)
+auditor.py       # structured .jsonl audit log: submissions + appeals + verifications
+analytics.py     # stretch feature 1 — analytics dashboard (/analytics, /dashboard)
+verification.py  # stretch feature 2 — provenance certificate (verified human)
 logs/            # audit.jsonl (gitignored)
+data/            # creators.json + challenges.json (gitignored runtime state)
 planning.md      # the pre-implementation spec (source of truth)
 sample_outputs/  # per-milestone + stretch verification records
 requirements.txt
