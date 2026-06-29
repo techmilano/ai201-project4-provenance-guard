@@ -99,9 +99,12 @@ reviewer inspects the queue via `GET /appeals`.
 | POST | `/appeal` | no | Contest a classification. Body: `{ content_id, creator_id, creator_reasoning }`. Flips status to `under_review`. |
 | GET | `/log` | no | Most recent audit-log entries (newest first) as `{ "entries": [...] }`. |
 | GET | `/appeals` | no | Reviewer queue of `under_review` items as `{ "entries": [...] }`. |
+| GET | `/analytics` | no | Aggregated metrics as JSON (stretch feature — see below). |
+| GET | `/dashboard` | no | HTML analytics view (stretch feature — see below). |
 
-`GET /log` and `GET /appeals` exist for documentation and grading visibility; in
-a real deployment they would require authentication.
+`GET /log`, `GET /appeals`, `GET /analytics`, and `GET /dashboard` exist for
+documentation and grading visibility; in a real deployment they would require
+authentication.
 
 ---
 
@@ -482,6 +485,57 @@ A short (~2 minute) video tour of the system. It shows:
 
 ---
 
+## Stretch Feature: Analytics Dashboard
+
+A read-only operator view summarizing what the system has been doing. It is
+derived **entirely from the existing audit log** (`logs/audit.jsonl`) — it adds
+no new storage and cannot change a classification, so it is fully additive to the
+core system. Implemented in [analytics.py](analytics.py): a pure `compute()`
+function does the aggregation and both endpoints share it, so the JSON and HTML
+views can never disagree.
+
+**`GET /analytics`** returns the metrics as JSON:
+
+```json
+{
+  "total_submissions": 3,
+  "total_appeals": 1,
+  "appeal_rate": 0.3333,
+  "attribution_counts": { "likely_ai": 1, "uncertain": 1, "likely_human": 1 },
+  "average_confidence": 0.5047,
+  "average_llm_ai_probability": 0.6,
+  "average_stylometric_ai_probability": 0.3619,
+  "most_common_attribution": "likely_ai",
+  "rate_limit": "10 per minute; 100 per day"
+}
+```
+
+**`GET /dashboard`** renders the same numbers as a dependency-free HTML page
+(no JavaScript, no chart library): summary cards, a bar chart of attribution
+counts, and bar gauges for the three average scores on a 0 = human / 1 = AI
+scale, with a link to the raw JSON.
+
+What it shows:
+
+- **Detection patterns** — how many submissions fell into each attribution
+  category (`likely_ai` / `uncertain` / `likely_human`).
+- **Appeal rate** — `total_appeals / total_submissions`, surfacing how often
+  creators contest a classification.
+- **Average scores** (the additional metric) — the mean combined confidence and
+  the mean of each individual signal. Because confidence is AI-likelihood, a
+  healthy system shows low averages when human content dominates; a drift upward
+  is an early warning of miscalibration. The mean per-signal scores also reveal
+  whether the LLM and stylometric signals are pulling in the same direction.
+
+Submission metrics count only `event_type == "submission"` and appeal metrics
+only `event_type == "appeal"`. With an empty log, counts are `0`, averages and
+`most_common_attribution` are `null`, and there is no division by zero. Neither
+endpoint is rate limited. See
+[sample_outputs/stretch_analytics_verification.md](sample_outputs/stretch_analytics_verification.md)
+for full example output.
+
+---
+
 ## Repository Layout
 
 ```
@@ -491,8 +545,9 @@ detector.py      # Signal 1 — Groq LLM classification
 stylometric.py   # Signal 2 — stylometric heuristics
 scoring.py       # combine signals -> confidence -> attribution
 auditor.py       # structured .jsonl audit log: submissions + appeals
+analytics.py     # stretch feature — analytics dashboard (/analytics, /dashboard)
 logs/            # audit.jsonl (gitignored)
 planning.md      # the pre-implementation spec (source of truth)
-sample_outputs/  # per-milestone verification records
+sample_outputs/  # per-milestone + stretch verification records
 requirements.txt
 ```

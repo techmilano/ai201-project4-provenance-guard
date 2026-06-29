@@ -107,6 +107,11 @@ def read_log(limit: int = 50) -> list:
     return _read_all()[-limit:][::-1]
 
 
+def read_all() -> list:
+    """Return every audit entry (oldest first). Used by the analytics dashboard."""
+    return _read_all()
+
+
 def read_appeals() -> list:
     """Return appealed (under_review) items, newest first, one per content_id."""
     latest = {}

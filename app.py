@@ -6,6 +6,8 @@ Routes:
     GET  /log       most recent audit-log entries
     POST /appeal    contest a classification; flips status to under_review
     GET  /appeals   reviewer queue of under_review items
+    GET  /analytics aggregated metrics (stretch feature 1)
+    GET  /dashboard HTML analytics view (stretch feature 1)
 """
 
 import uuid
@@ -18,10 +20,12 @@ from config import LABELS, RATE_LIMIT
 from detector import detect_ai
 from stylometric import detect_stylometric
 from scoring import combine
+from analytics import compute, render_dashboard
 from auditor import (
     find_submission,
     log_appeal,
     log_submission,
+    read_all,
     read_appeals,
     read_log,
 )
@@ -159,6 +163,16 @@ def appeal():
 @app.route("/appeals", methods=["GET"])
 def appeals():
     return jsonify({"entries": read_appeals()})
+
+
+@app.route("/analytics", methods=["GET"])
+def analytics():
+    return jsonify(compute(read_all()))
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    return render_dashboard(compute(read_all()))
 
 
 if __name__ == "__main__":

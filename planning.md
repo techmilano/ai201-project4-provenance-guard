@@ -86,8 +86,10 @@ A submission enters through `POST /submit`, is validated and assigned a `content
 | POST | `/appeal` | `{ content_id, creator_id, creator_reasoning }` | `{ content_id, status, message }` |
 | GET | `/log` | — | `{ entries: [...] }` (most recent audit entries) |
 | GET | `/appeals` | — | `{ entries: [...] }` (items with status `under_review`) |
+| GET | `/analytics` | — | `{ ... }` aggregated metrics (stretch feature 1) |
+| GET | `/dashboard` | — | HTML view rendering the analytics (stretch feature 1) |
 
-Rate limiting (`10 per minute; 100 per day`) is applied to `POST /submit`. `GET /log` and `GET /appeals` exist for grading/documentation visibility; in production they would require auth.
+Rate limiting (`10 per minute; 100 per day`) is applied to `POST /submit`. `GET /log`, `GET /appeals`, `GET /analytics`, and `GET /dashboard` exist for grading/documentation visibility; in production they would require auth.
 
 ## Module Structure
 
@@ -103,6 +105,7 @@ ai201-project4-provenance-guard/
 ├── labels.py               # attribution category -> transparency label text
 ├── auditor.py              # structured .jsonl audit log writer + reader
 ├── store.py                # content/status storage (content_id -> record)
+├── analytics.py            # stretch 1: aggregate audit log -> dashboard metrics
 ├── logs/                   # audit.jsonl written here
 ├── requirements.txt
 ├── .env                    # GROQ_API_KEY (gitignored)
@@ -300,3 +303,105 @@ This project extends the RepairSafe lab (`ai201-lab4-repairsafe-starter`). Docum
 - **Transparency labels, appeals workflow, rate limiting, and a Flask API** (RepairSafe used a Gradio UI with no appeals or rate limiting).
 
 One deliberate divergence: RepairSafe fails closed toward `caution` (its safe-by-default tier); we fail closed toward `uncertain`/neutral, because on a creative platform the harm to avoid is falsely accusing a human, not under-warning about risk.
+
+## Stretch Feature 1 — Analytics Dashboard
+
+A simple operator-facing view summarizing what the system has been doing:
+detection patterns, appeal rates, and one additional metric. This is the
+"Analytics dashboard" stretch feature from the project brief (tracked on branch
+`stretch_feature1`).
+
+### Goal
+
+Give a platform operator a one-glance picture of detection behavior and where
+creators are pushing back, so they can spot a miscalibrated classifier or an
+abnormal appeal rate without reading the raw audit log line by line.
+
+### Data source
+
+The dashboard is **read-only and derived entirely from the existing audit log**
+(`logs/audit.jsonl`) — no new storage. It reads every entry (submissions and
+appeals) and aggregates them in memory on each request. This keeps the feature
+additive: it cannot change a classification or write to the log.
+
+A small `analytics.py` module computes the metrics; `app.py` exposes them. The
+audit reader (`auditor._read_all()`) is reused to load entries.
+
+### Metrics
+
+**1. Detection patterns** — the distribution of attributions across all
+submissions:
+
+- count and percentage for each of `likely_ai`, `uncertain`, `likely_human`.
+
+**2. Appeal rate** — how often creators contest a classification:
+
+- `appeal_rate = total_appeals / total_submissions` (reported as a percentage).
+- `appeals_by_original_attribution` — how many appeals originated from each
+  attribution category. This shows *which verdicts get contested most* (we
+  expect `likely_ai` to draw the most appeals), which is the most actionable
+  signal for spotting false positives.
+
+**3. Additional metric (chosen): average confidence score** — the mean combined
+`ai_probability`, reported overall and per attribution category. Because
+`confidence` is AI-likelihood, this shows how *decisive* the system is: a healthy
+system should show low average confidence for `likely_human`, high for
+`likely_ai`, and mid-range for `uncertain`. A drift here (e.g. `likely_human`
+average creeping up) is an early warning of miscalibration.
+
+> Operational bonus (not the required "additional metric"): the dashboard also
+> reports the **LLM availability rate** — the share of submissions where
+> `llm_status == "available"` — so an operator can see when results were running
+> degraded (stylometric-only).
+
+### Endpoints
+
+- **`GET /analytics`** → JSON, the machine-readable aggregates:
+
+  ```json
+  {
+    "total_submissions": 12,
+    "total_appeals": 3,
+    "appeal_rate_pct": 25.0,
+    "attribution_counts": {"likely_ai": 4, "uncertain": 5, "likely_human": 3},
+    "attribution_pct": {"likely_ai": 33.3, "uncertain": 41.7, "likely_human": 25.0},
+    "appeals_by_original_attribution": {"likely_ai": 2, "uncertain": 1, "likely_human": 0},
+    "avg_confidence_overall": 0.46,
+    "avg_confidence_by_attribution": {"likely_ai": 0.78, "uncertain": 0.55, "likely_human": 0.16},
+    "llm_availability_pct": 100.0
+  }
+  ```
+
+- **`GET /dashboard`** → a minimal self-contained **HTML view** rendering the
+  same numbers as labeled sections with simple text/CSS bar charts (no
+  JavaScript, no chart library, no new dependency). It calls the same
+  `analytics.compute()` function so the two endpoints never disagree.
+
+Neither endpoint is rate limited (read-only, no external API calls).
+
+### Edge cases
+
+- **Empty / missing log** → every count is `0`, `appeal_rate_pct` is `0.0`, and
+  the averages are `null` (or `0.0`); no division-by-zero.
+- **Appeals only counted against real submissions** — appeals reference a
+  `content_id` that exists in the log (guaranteed by the M5 `/appeal`
+  validation), so `appeals_by_original_attribution` always resolves.
+- **Percentages** are rounded to one decimal place for display.
+
+### AI Tool Plan (this stretch)
+
+- **Spec provided:** this section + the Audit Log section (entry field names) +
+  Module Structure.
+- **Ask the AI to generate:** `analytics.py` with a pure `compute(entries)`
+  function (no I/O — takes a list of entries, returns the metrics dict) plus the
+  two Flask routes (`/analytics` returning `jsonify(compute(...))`, `/dashboard`
+  rendering an HTML template string).
+- **Verify:** unit-test `compute()` on a hand-built list of entries (including
+  the empty-log case) so the math is checked without the LLM; then load
+  `/dashboard` in a browser against the real audit log and confirm the numbers
+  match `/analytics`.
+
+### Documentation
+
+Per the brief, completing a stretch feature requires documenting it in the
+README (what it does and how it works) in addition to this planning entry.
