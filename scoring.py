@@ -1,21 +1,30 @@
-"""Confidence scoring — combine the two signals into one calibrated result.
+"""Confidence scoring — combine the detection signals into one calibrated result.
 
-Implements the planning.md rules:
-  - weighted combine: 0.6 * LLM + 0.4 * stylometric
-  - thresholds: >= 0.85 likely_ai, <= 0.25 likely_human, else uncertain
+Implements the planning.md rules (stretch feature 3 — three-signal ensemble):
+  - weighted combine: 0.55*LLM + 0.30*stylometric + 0.15*phrase_pattern
+    (weights renormalized over whichever signals are available)
+  - thresholds: >= 0.70 likely_ai, <= 0.25 likely_human, else uncertain
   - false-positive-averse overrides (all can only move a verdict toward
     uncertain, never toward likely_ai):
       * short / insufficient stylometric text -> uncertain
-      * signals disagree by more than DISAGREE_DELTA -> uncertain
-      * single-signal mode (one signal down) can never reach likely_ai
+      * ensemble voting rule: likely_ai requires combined >= AI_THRESHOLD AND
+        at least VOTE_MIN_SIGNALS signals individually >= VOTE_THRESHOLD;
+        otherwise force uncertain
+
+The voting rule replaces the two-signal version's pairwise LLM/stylometric
+disagreement override: requiring two of the three signals to corroborate is a
+stronger, more general guard, and — unlike the pairwise rule — it does not veto a
+verdict that two independent signals actually agree on.
 """
 
 from config import (
     AI_THRESHOLD,
-    DISAGREE_DELTA,
     HUMAN_THRESHOLD,
     LLM_WEIGHT,
+    PHRASE_WEIGHT,
     STYLO_WEIGHT,
+    VOTE_MIN_SIGNALS,
+    VOTE_THRESHOLD,
 )
 
 
@@ -27,27 +36,33 @@ def _attribution(score: float) -> str:
     return "uncertain"
 
 
-def combine(llm: dict, stylo: dict) -> dict:
-    """Combine signal results into {confidence, attribution, notes}."""
-    llm_p = llm["ai_probability"]
-    stylo_p = stylo["ai_probability"]
+def combine(llm: dict, stylo: dict, phrase: dict) -> dict:
+    """Combine the three signal results into {confidence, attribution, notes}."""
+    llm_p, stylo_p, phrase_p = (
+        llm["ai_probability"],
+        stylo["ai_probability"],
+        phrase["ai_probability"],
+    )
     llm_ok = llm["status"] == "available"
     stylo_ok = stylo["status"] == "available"
+    phrase_ok = phrase["status"] == "available"  # phrase signal is always available
     notes = []
 
-    # --- weighted combined score (best ai_probability estimate) ---
-    if llm_ok and stylo_ok:
-        combined = LLM_WEIGHT * llm_p + STYLO_WEIGHT * stylo_p
-    elif stylo_ok:
-        combined = stylo_p
-        notes.append("llm_unavailable_stylometric_only")
-    elif llm_ok:
-        combined = llm_p
-        notes.append("stylometric_unavailable_llm_only")
+    # --- weighted combined score over available signals (renormalized) ---
+    parts = []
+    if llm_ok:
+        parts.append((llm_p, LLM_WEIGHT))
     else:
-        combined = 0.5
-        notes.append("both_signals_unavailable")
+        notes.append("llm_unavailable")
+    if stylo_ok:
+        parts.append((stylo_p, STYLO_WEIGHT))
+    else:
+        notes.append("stylometric_unavailable")
+    if phrase_ok:
+        parts.append((phrase_p, PHRASE_WEIGHT))
 
+    total_w = sum(w for _, w in parts)
+    combined = sum(p * w for p, w in parts) / total_w if total_w else 0.5
     combined = round(combined, 4)
     attribution = _attribution(combined)
 
@@ -57,13 +72,14 @@ def combine(llm: dict, stylo: dict) -> dict:
             notes.append("short_text_forced_uncertain")
         attribution = "uncertain"
 
-    if llm_ok and stylo_ok and abs(llm_p - stylo_p) > DISAGREE_DELTA:
-        if attribution != "uncertain":
-            notes.append("signal_disagreement_forced_uncertain")
-        attribution = "uncertain"
-
-    if not (llm_ok and stylo_ok) and attribution == "likely_ai":
-        notes.append("single_signal_capped_uncertain")
+    # ensemble voting rule: likely_ai needs corroboration from >= 2 signals
+    votes = sum(
+        1
+        for p, ok in ((llm_p, llm_ok), (stylo_p, stylo_ok), (phrase_p, phrase_ok))
+        if ok and p >= VOTE_THRESHOLD
+    )
+    if attribution == "likely_ai" and votes < VOTE_MIN_SIGNALS:
+        notes.append("ensemble_insufficient_votes_forced_uncertain")
         attribution = "uncertain"
 
     return {"confidence": combined, "attribution": attribution, "notes": notes}

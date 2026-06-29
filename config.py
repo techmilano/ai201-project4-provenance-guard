@@ -18,9 +18,17 @@ LLM_MODEL = "llama-3.3-70b-versatile"  # same model as Labs 1–3 / RepairSafe
 # --- Audit log ---
 LOG_FILE = "logs/audit.jsonl"
 
-# --- Signal combination weights (used from Milestone 4) ---
-LLM_WEIGHT = 0.6
-STYLO_WEIGHT = 0.4
+# --- Signal combination weights ---
+# Three-signal ensemble (stretch feature 3): 0.55 LLM + 0.30 stylometric +
+# 0.15 phrase-pattern. (Were 0.6/0.4 in the two-signal Milestone 4 version.)
+LLM_WEIGHT = 0.55
+STYLO_WEIGHT = 0.30
+PHRASE_WEIGHT = 0.15
+
+# Ensemble voting rule: likely_ai requires combined >= AI_THRESHOLD AND at least
+# VOTE_MIN_SIGNALS signals individually >= VOTE_THRESHOLD.
+VOTE_THRESHOLD = 0.60
+VOTE_MIN_SIGNALS = 2
 
 # --- Attribution thresholds (planning.md) ---
 # AI_THRESHOLD lowered 0.85 -> 0.70 after M4 calibration: at 0.85, likely_ai was
@@ -28,7 +36,6 @@ STYLO_WEIGHT = 0.4
 # false-positive averse while making all three labels reachable.
 AI_THRESHOLD = 0.70       # combined score >= this -> likely_ai
 HUMAN_THRESHOLD = 0.25    # combined score <= this -> likely_human
-DISAGREE_DELTA = 0.50     # |llm - stylo| > this -> force uncertain (Milestone 4)
 MIN_WORDS = 40            # below this, stylometry is unstable (Milestone 4)
 
 VALID_ATTRIBUTIONS = {"likely_ai", "uncertain", "likely_human"}

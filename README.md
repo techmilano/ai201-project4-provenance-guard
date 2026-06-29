@@ -113,9 +113,11 @@ authentication.
 
 ## 4. Detection Signals
 
-The system uses **two genuinely independent signals** — one semantic, one
-structural — so their combination is more informative than either alone. Both
-emit a normalized `ai_probability` in `[0.0, 1.0]` (1.0 = strongly reads as AI).
+The system uses **three genuinely independent signals** — one semantic, one
+structural, one lexical — so their combination is more informative than any alone.
+Each emits a normalized `ai_probability` in `[0.0, 1.0]` (1.0 = strongly reads as
+AI). (Signal 3 is the ensemble stretch feature; see *Stretch Feature: Ensemble
+Detection*.)
 
 ### Signal 1 — Groq LLM classification (semantic / holistic)
 
@@ -152,6 +154,21 @@ emit a normalized `ai_probability` in `[0.0, 1.0]` (1.0 = strongly reads as AI).
   short texts produce unstable metrics. Type-token ratio is length-confounded
   and is neutralized below ~100 words (see *Spec Reflection*).
 
+### Signal 3 — Phrase-pattern (lexical / ensemble stretch)
+
+- **File:** [phrase_signal.py](phrase_signal.py) · pure Python, no API
+- **What it measures:** density of common AI-style filler phrases / markers
+  (e.g. *"it is important to note"*, *"paradigm shift"*, *"furthermore"*,
+  *"leverage"*, *"delve into"*) per ~100 words. Independent of both the semantic
+  read and the structural metrics.
+- **Why chosen:** a cheap, transparent lexical tell that corroborates the other
+  two signals; it is the most explainable signal (it returns the exact phrases
+  it matched).
+- **What it misses:** keyword lists are trivially evaded (paraphrase, synonyms)
+  and can false-positive on legitimate formal human writing — which is why its
+  weight is the smallest (`0.15`) and a single match is capped at `0.30` (below
+  the voting threshold) so one phrase can never accuse on its own.
+
 ---
 
 ## 5. Confidence Scoring
@@ -161,12 +178,17 @@ Scoring logic lives in [scoring.py](scoring.py).
 ### Combination
 
 ```
-combined = 0.6 * llm_ai_probability + 0.4 * stylometric_ai_probability
+combined = 0.55 * llm + 0.30 * stylometric + 0.15 * phrase_pattern
 ```
 
-The LLM is weighted higher because the holistic semantic read is the stronger
-single indicator; the stylometric signal is an independent corroborator and a
-fallback. The returned `confidence` field **is** this combined `ai_probability`.
+The LLM is weighted highest because the holistic semantic read is the strongest
+single indicator; the stylometric signal is an independent structural
+corroborator; the phrase signal is a light lexical tie-breaker. If a signal is
+unavailable (LLM down, or stylometric on short text), the remaining weights are
+renormalized. The returned `confidence` field **is** this combined
+`ai_probability`. (The two-signal Milestone 4 version used `0.6/0.4`; the third
+signal was added in the ensemble stretch — see *Stretch Feature: Ensemble
+Detection*.)
 
 ### Thresholds
 
@@ -188,13 +210,20 @@ confidence value because the score measures AI-likelihood.
 These rules can only ever move a verdict *toward* `uncertain`, never toward
 `likely_ai`:
 
-- **Signal disagreement:** if `|llm − stylometric| > 0.5`, the signals
-  fundamentally conflict → forced `uncertain`, so one confident-but-wrong signal
-  can't dominate.
+- **Ensemble voting rule:** `likely_ai` requires `combined >= 0.70` **and** at
+  least **two of the three** signals individually `>= 0.60`. If the combined
+  score clears `0.70` but fewer than two signals agree, the verdict is forced to
+  `uncertain` (note `ensemble_insufficient_votes_forced_uncertain`). This means
+  no single strong signal can produce an AI accusation — independent
+  corroboration is required. It also subsumes the old "single-signal mode" guard
+  (one signal can never muster two votes).
 - **Short / insufficient text:** below ~40 words the stylometric signal is
   unstable → forced `uncertain`.
-- **Single-signal mode:** if one signal is unavailable, the result can never
-  reach `likely_ai` (we don't accuse on one signal alone).
+
+> The two-signal version forced `uncertain` on any large LLM/stylometric
+> disagreement. The voting rule **replaces** that pairwise override: requiring
+> two of three signals to corroborate is stronger and, unlike the pairwise rule,
+> does not veto a verdict that two independent signals genuinely agree on.
 
 ### Example submissions (noticeably different scores)
 
@@ -316,6 +345,9 @@ decision diagnosable after the fact. Full samples are in
 | `llm_status` | `available` / `unavailable` |
 | `stylometric_ai_probability` | Signal 2 score |
 | `stylometric_status` | `available` / `insufficient_text` |
+| `phrase_ai_probability` | Signal 3 score |
+| `phrase_status` | `available` |
+| `matched_phrases` | AI-style phrases Signal 3 matched (may be empty) |
 | `notes` | scoring overrides that fired (may be empty) |
 | `status` | `"classified"` |
 
@@ -609,6 +641,50 @@ due to Groq non-determinism. Full evidence:
 
 ---
 
+## Stretch Feature: Ensemble Detection (3 signals + voting)
+
+Upgrades the detector from two signals to a **three-signal ensemble** with a
+documented weighting *and* a voting rule. The third signal is the
+phrase-pattern signal ([phrase_signal.py](phrase_signal.py)) — a cheap, fully
+independent lexical check that scans for common AI-style markers (*"it is
+important to note"*, *"paradigm shift"*, *"leverage"*, *"delve into"*, etc.).
+
+**Weighting:**
+
+```
+combined = 0.55 * llm + 0.30 * stylometric + 0.15 * phrase_pattern
+```
+
+**Voting rule (false-positive averse):** `likely_ai` requires `combined >= 0.70`
+**and** at least **two of the three** signals individually `>= 0.60`. If the
+combined score clears the bar but fewer than two signals corroborate, the verdict
+is forced to `uncertain`. This guarantees an AI accusation always rests on
+independent corroboration, not one strong signal.
+
+**Phrase-signal scoring** is conservative: the score is the density of *distinct*
+matched phrases per ~100 words, and a single match is capped at `0.30` (below the
+`0.60` voting threshold) so one incidental phrase can never count as an AI vote.
+The signal returns the exact `matched_phrases` it found, making it the most
+explainable of the three. It is always `available` (pure Python).
+
+Each `/submit` response now includes a `phrase` entry in its `signals` block, and
+the audit log records `phrase_ai_probability`, `phrase_status`, and
+`matched_phrases`. Worked examples (AI-like vs human-like text, the audit entry,
+and the voting-rule truth table) are in
+[sample_outputs/stretch_ensemble_verification.md](sample_outputs/stretch_ensemble_verification.md).
+
+**Design note:** After adding the third phrase-pattern signal, I replaced the old
+pairwise LLM-vs-stylometric disagreement override with a three-signal voting rule.
+The old rule was useful for the two-signal version, but it became too conservative
+after the ensemble was added. Clearly AI-like text could be strongly supported by
+the LLM and phrase-pattern signals while receiving a lower stylometric score,
+causing the old pairwise veto to incorrectly force `uncertain`. The new rule
+requires at least two of three signals to support `likely_ai`, which preserves
+false-positive caution while allowing the ensemble to use corroborating evidence.
+Appeals and rate limiting are unchanged.
+
+---
+
 ## Repository Layout
 
 ```
@@ -616,7 +692,8 @@ app.py           # Flask app: routes, orchestration, rate limiting
 config.py        # constants: model, log path, weights, thresholds, labels
 detector.py      # Signal 1 — Groq LLM classification
 stylometric.py   # Signal 2 — stylometric heuristics
-scoring.py       # combine signals -> confidence -> attribution
+phrase_signal.py # Signal 3 — phrase-pattern (ensemble stretch)
+scoring.py       # combine 3 signals -> confidence -> attribution (+ voting rule)
 auditor.py       # structured .jsonl audit log: submissions + appeals + verifications
 analytics.py     # stretch feature 1 — analytics dashboard (/analytics, /dashboard)
 verification.py  # stretch feature 2 — provenance certificate (verified human)

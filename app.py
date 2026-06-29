@@ -20,6 +20,7 @@ from flask_limiter.util import get_remote_address
 from config import LABELS, RATE_LIMIT, VERIFY_MAX_AI_PROBABILITY, VERIFY_MIN_WORDS
 from detector import detect_ai
 from stylometric import detect_stylometric
+from phrase_signal import detect_phrases
 from scoring import combine
 from analytics import compute, render_dashboard
 from auditor import (
@@ -83,12 +84,13 @@ def submit():
 
     content_id = str(uuid.uuid4())
 
-    # --- detection signals ---
+    # --- detection signals (three-signal ensemble) ---
     llm = detect_ai(text)                  # Signal 1: Groq LLM (semantic)
     stylo = detect_stylometric(text)       # Signal 2: stylometric (structural)
+    phrase = detect_phrases(text)          # Signal 3: phrase-pattern (lexical)
 
     # --- combined confidence scoring ---
-    decision = combine(llm, stylo)
+    decision = combine(llm, stylo, phrase)
     confidence = decision["confidence"]
     attribution = decision["attribution"]
     label = label_for(attribution)
@@ -107,6 +109,9 @@ def submit():
         llm_status=llm["status"],
         stylometric_ai_probability=stylo["ai_probability"],
         stylometric_status=stylo["status"],
+        phrase_ai_probability=phrase["ai_probability"],
+        phrase_status=phrase["status"],
+        matched_phrases=phrase["matched_phrases"],
         notes=decision["notes"],
         provenance_certificate=certificate,
     )
@@ -129,6 +134,12 @@ def submit():
                     "ai_probability": stylo["ai_probability"],
                     "status": stylo["status"],
                     "metrics": stylo["metrics"],
+                },
+                "phrase": {
+                    "ai_probability": phrase["ai_probability"],
+                    "status": phrase["status"],
+                    "matched_phrases": phrase["matched_phrases"],
+                    "reasoning": phrase["reasoning"],
                 },
             },
         }
@@ -247,7 +258,8 @@ def verify():
     # --- score the response through the SAME detection pipeline ---
     llm = detect_ai(response_text)
     stylo = detect_stylometric(response_text)
-    decision = combine(llm, stylo)
+    phrase = detect_phrases(response_text)
+    decision = combine(llm, stylo, phrase)
     ai_probability = decision["confidence"]
 
     # One scored attempt per challenge (anti-gaming): consume it now.

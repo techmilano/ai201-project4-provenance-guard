@@ -43,6 +43,9 @@ def log_submission(
     llm_status: str,
     stylometric_ai_probability: float,
     stylometric_status: str,
+    phrase_ai_probability: float,
+    phrase_status: str,
+    matched_phrases,
     notes=None,
     provenance_certificate=None,
 ) -> dict:
@@ -60,6 +63,9 @@ def log_submission(
             "llm_status": llm_status,
             "stylometric_ai_probability": stylometric_ai_probability,
             "stylometric_status": stylometric_status,
+            "phrase_ai_probability": phrase_ai_probability,
+            "phrase_status": phrase_status,
+            "matched_phrases": matched_phrases or [],
             "notes": notes or [],
             "provenance_certificate": provenance_certificate
             or {"verified_human": False, "badge": None, "verified_at": None},
