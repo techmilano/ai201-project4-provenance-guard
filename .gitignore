@@ -4,3 +4,4 @@ __pycache__/
 .env
 audit_log.json
 instance/
+logs/audit.jsonl
